@@ -12,7 +12,7 @@ An agentic research assistant that answers questions from **your uploaded PDFs a
 - **Self-reflection**: a Reviewer agent checks the draft against the sources; if it isn't grounded, it writes a better query, re-retrieves and the Writer tries again
 - **Tool calling**: the Writer calls a safe calculator tool for any arithmetic instead of guessing
 - **Conversation memory**: follow-up questions ("what about 2024?") work, via LangGraph's checkpointer (one thread per chat session)
-- **Streaming**: FastAPI streams agent steps and answer tokens as NDJSON; the Streamlit UI renders them live
+- **Streaming**: agent steps and answer tokens stream live, over NDJSON from FastAPI or directly in-process in Streamlit
 - **Multi-document upload**, one FAISS index per session, persisted to disk
 - **Swappable LLM provider**: Google Gemini (free tier) or OpenAI via one env var
 - **Tested without API keys**: a scripted fake LLM drives the full graph + API in `pytest`
@@ -55,31 +55,35 @@ An agentic research assistant that answers questions from **your uploaded PDFs a
 | Tools (web search, calculator) | `research_agent/tools.py` |
 | LLM / embeddings provider switch | `research_agent/llm.py` |
 | REST + streaming API | `api.py` |
-| Chat UI | `ui.py` |
+| Chat UI (runs the agent in-process, or calls the API) | `ui.py` |
+| Streaming events shared by API and UI | `research_agent/service.py` |
 | Tests (fake LLM, no keys needed) | `tests/` |
 
 ## Quick start
 
 ```bash
-git clone https://github.com/shruti9934/ai-research-assistant.git
-cd ai-research-assistant
+git clone https://github.com/shruti9934/ai_research.git
+cd ai_research
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env        # then paste your API key into .env
+cp .env.example .env        # Windows: copy .env.example .env  - then paste your API key into .env
+streamlit run ui.py         # http://localhost:8501
 ```
 
 Get a free Gemini key at <https://aistudio.google.com/apikey> (or use an OpenAI key and set `LLM_PROVIDER=openai`).
 
-Run the API and the UI in two terminals:
-
-```bash
-uvicorn api:app --reload          # http://localhost:8000/docs
-streamlit run ui.py               # http://localhost:8501
-```
-
 Upload one or more PDFs in the sidebar, click **Index documents**, and ask questions. With no documents
 uploaded, questions are answered from the web.
+
+### Run as a separate API + UI
+
+The Streamlit app runs the agent itself by default. To use the FastAPI backend instead (two terminals):
+
+```bash
+uvicorn api:app --reload                          # http://localhost:8000/docs
+API_URL=http://localhost:8000 streamlit run ui.py  # Windows PowerShell: $env:API_URL="http://localhost:8000"; streamlit run ui.py
+```
 
 ### With Docker
 
@@ -89,6 +93,17 @@ docker compose up --build
 ```
 
 UI → <http://localhost:8501>, API docs → <http://localhost:8000/docs>
+
+### Deploy (free) on Streamlit Community Cloud
+
+1. Sign in at <https://share.streamlit.io> with GitHub.
+2. **Create app → Deploy a public app from GitHub**: repository `shruti9934/ai_research`, branch `main`,
+   main file `ui.py`. In *Advanced settings* choose Python 3.13.
+3. In *Advanced settings → Secrets* paste:
+   ```toml
+   GOOGLE_API_KEY = "your-gemini-key"
+   ```
+4. Click **Deploy**. The key stays private in Streamlit's secrets store and is never committed to GitHub.
 
 ## API
 

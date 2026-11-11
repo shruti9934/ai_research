@@ -31,7 +31,6 @@ class Settings:
     history_turns: int = int(os.getenv("HISTORY_TURNS", "6"))
 
     index_dir: Path = field(default_factory=lambda: Path(os.getenv("INDEX_DIR", ROOT / "data" / "indexes")))
-    api_url: str = field(default_factory=lambda: os.getenv("API_URL", "http://localhost:8000"))
 
 
 settings = Settings()

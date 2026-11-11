@@ -114,7 +114,8 @@ def _merge(old: list[dict], new: list[dict], key: Callable[[dict], object]) -> l
 
 # --------------------------------------------------------------------------- graph factory
 def build_graph(llm: BaseChatModel, stores: StoreRegistry,
-                search_fn: Callable[[str, int], list[dict]] = ddg_search, checkpointer=None):
+                search_fn: Callable[[str, int], list[dict]] | None = None, checkpointer=None):
+    search_fn = search_fn or ddg_search
     planner_llm = llm.with_structured_output(Plan)
     grader_llm = llm.with_structured_output(Grade)
     writer_llm = llm.bind_tools([calculator])

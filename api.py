@@ -11,25 +11,16 @@ from typing import AsyncIterator
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, AIMessageChunk
 from pydantic import BaseModel, Field
 
 from research_agent.config import settings
 from research_agent.documents import pdf_to_chunks
 from research_agent.graph import build_graph, turn_input
-from research_agent.llm import text_of
+from research_agent.service import aiter_events, config, result_payload
 from research_agent.tools import ddg_search
 from research_agent.vectorstore import StoreRegistry
 
 MAX_UPLOAD_MB = 25
-STEP_LABELS = {
-    "planner": "Planning how to answer",
-    "retriever": "Searching your documents",
-    "web_search": "Searching the web",
-    "writer": "Writing the answer",
-    "grader": "Checking the answer against sources",
-    "finalize": "Done",
-}
 
 
 class ChatRequest(BaseModel):
@@ -47,14 +38,6 @@ def create_app(llm=None, embeddings=None, search_fn=None, index_dir=settings.ind
     stores = StoreRegistry(embeddings, index_dir)
     graph = build_graph(llm, stores, search_fn=search_fn or ddg_search)
     app = FastAPI(title="AI Research Assistant", version="1.0.0")
-
-    def cfg(session_id: str) -> dict:
-        return {"configurable": {"thread_id": session_id}}
-
-    def result_payload(session_id: str) -> dict:
-        values = graph.get_state(cfg(session_id)).values
-        return {"answer": values.get("answer", ""), "sources": values.get("sources", []),
-                "route": values.get("route", "")}
 
     @app.get("/health")
     def health():
@@ -90,61 +73,15 @@ def create_app(llm=None, embeddings=None, search_fn=None, index_dir=settings.ind
 
     @app.post("/chat")
     async def chat(req: ChatRequest):
-        await graph.ainvoke(turn_input(req.session_id, req.question), cfg(req.session_id))
-        return result_payload(req.session_id)
+        await graph.ainvoke(turn_input(req.session_id, req.question), config(req.session_id))
+        return result_payload(graph, req.session_id)
 
     @app.post("/chat/stream")
     async def chat_stream(req: ChatRequest):
-        """Streams newline-delimited JSON events:
-        {"type": "step", "node", "label"} - an agent finished / started
-        {"type": "token", "text"}         - answer text as it is generated
-        {"type": "retry", "reason"}       - reviewer rejected the draft, a new one follows
-        {"type": "final", "answer", "sources", "route"}
-        """
-        route = {"value": ""}
-
-        def step(node: str, label: str | None = None) -> dict:
-            return {"type": "step", "node": node, "label": label or STEP_LABELS[node]}
-
-        def search_step() -> dict:
-            return step("web_search") if route["value"] == "web" else step("retriever")
-
-        def progress_events(node: str, update: dict) -> list[dict]:
-            """Turn a node's state update into UI events (what happened + what runs next)."""
-            if node == "planner":
-                route["value"] = update.get("route", "")
-                nxt = {"documents": search_step(), "both": step("retriever"), "web": step("web_search")}
-                return [step("route", f"Route: {route['value']}"), nxt.get(route["value"], step("writer"))]
-            if node == "retriever":
-                found = step("retriever", f"Found {len(update.get('doc_results', []))} relevant passages")
-                return [found, step("web_search") if route["value"] == "both" else step("writer")]
-            if node == "web_search":
-                return [step("web_search", f"Found {len(update.get('web_results', []))} web results"),
-                        step("writer")]
-            if node == "writer":
-                return [step("grader")]
-            if node == "grader" and update.get("retry"):
-                return [{"type": "retry", "reason": update.get("feedback", "")}, search_step()]
-            return []
-
+        """Streams newline-delimited JSON events (see research_agent/service.py for the event types)."""
         async def events() -> AsyncIterator[str]:
-            yield json.dumps({"type": "step", "node": "planner", "label": STEP_LABELS["planner"]}) + "\n"
-            try:
-                async for mode, chunk in graph.astream(turn_input(req.session_id, req.question),
-                                                       cfg(req.session_id), stream_mode=["updates", "messages"]):
-                    if mode == "messages":
-                        msg, meta = chunk
-                        if meta.get("langgraph_node") == "writer" and isinstance(msg, (AIMessageChunk, AIMessage)):
-                            text = text_of(msg.content)
-                            if text:
-                                yield json.dumps({"type": "token", "text": text}) + "\n"
-                    else:  # updates: {node_name: state_update}
-                        for node, update in chunk.items():
-                            for event in progress_events(node, update or {}):
-                                yield json.dumps(event) + "\n"
-                yield json.dumps({"type": "final", **result_payload(req.session_id)}) + "\n"
-            except Exception as exc:  # surface model/API errors to the UI instead of a broken stream
-                yield json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"}) + "\n"
+            async for event in aiter_events(graph, req.session_id, req.question):
+                yield json.dumps(event) + "\n"
 
         return StreamingResponse(events(), media_type="application/x-ndjson")
 
