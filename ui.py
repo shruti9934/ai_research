@@ -17,12 +17,19 @@ import streamlit as st
 st.set_page_config(page_title="AI Research Assistant", page_icon="🔎", layout="wide")
 
 # On Streamlit Cloud the API key lives in st.secrets - expose it as an env var before the agent reads settings.
+SECRET_NAMES: list[str] = []
 try:
     for _key, _value in st.secrets.items():
-        if isinstance(_value, str):
-            os.environ.setdefault(_key, _value)
+        # accept top-level keys and keys inside a [section]
+        items = _value.items() if hasattr(_value, "items") else [(_key, _value)]
+        for _name, _val in items:
+            if isinstance(_val, str) and _val.strip():
+                SECRET_NAMES.append(_name)
+                os.environ.setdefault(_name.upper(), _val.strip())
 except Exception:  # no secrets file when running locally
     pass
+if not os.getenv("GOOGLE_API_KEY") and os.getenv("GEMINI_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
 
 API_URL = os.getenv("API_URL", "").strip()
 
@@ -103,6 +110,7 @@ except Exception as exc:
     st.error(f"Could not start the agent: {exc}")
     st.info("Add your API key: locally in a `.env` file (see `.env.example`), "
             "or on Streamlit Cloud under **App settings → Secrets** as `GOOGLE_API_KEY = \"...\"`.")
+    st.caption("Secret names found: " + (", ".join(f"`{n}`" for n in SECRET_NAMES) or "none"))
     st.stop()
 
 if "session_id" not in st.session_state:
